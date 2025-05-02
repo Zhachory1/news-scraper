@@ -19,6 +19,7 @@
       "ms-python.debugpy"
       "ms-python.python"
       "rail5.bashpp"
+      "498.pythonformat"
     ];
     # Enable previews
     previews = {
