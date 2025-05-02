@@ -7,3 +7,17 @@ My intention is to do some analysis and possibly cluster these articles to ident
 First step first, let's make a News Webscraper
 
 Working from this set of rss feeds: https://github.com/plenaryapp/awesome-rss-feeds?tab=readme-ov-file#News
+
+## Running
+
+To start the schedule, run the following command
+
+```
+source start_job.sh
+```
+
+If you just want to test things, you can just add the test flag
+
+```
+source start_job.sh -t
+```

@@ -4,4 +4,10 @@ if [[ -z "${VIRTUAL_ENV+x}" ]] ; then
     source .venv/bin/activate
     pip install -r requirements.txt
 fi
-python news_scraper.py --test
+
+# View news_scaper.py to see all arguments
+if [[ $# -eq 0 ]] ; then
+    python news_scraper.py 
+else
+    python news_scraper.py $@
+fi
