@@ -5,3 +5,5 @@ This is my own personal web scraper for a list of news websites that I like to f
 My intention is to do some analysis and possibly cluster these articles to identify trending stories and such. 
 
 First step first, let's make a News Webscraper
+
+Working from this set of rss feeds: https://github.com/plenaryapp/awesome-rss-feeds?tab=readme-ov-file#News
