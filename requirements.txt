@@ -1,0 +1,7 @@
+pip
+
+feedparser 
+requests
+beautifulsoup4
+mysql-connector-python
+schedule
