@@ -6,6 +6,7 @@ import argparse
 import csv
 import hashlib
 import html
+import os
 import json
 from types import SimpleNamespace
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -27,13 +28,18 @@ try:
 except ImportError:
     schedule = None
 
+try:
+    import requests
+except ImportError:
+    requests = None
+
 # --- Configuration ---
 # Database Credentials (Replace with your actual details)
 DB_CONFIG = {
-    "host": "YOUR_DATABASE_HOST",  # e.g., 'localhost'
-    "user": "YOUR_DATABASE_USER",  # e.g., 'root'
-    "password": "YOUR_DATABASE_PASSWORD",
-    "database": "YOUR_DATABASE_NAME",  # e.g., 'news_articles'
+    "host": os.getenv("NEWS_DB_HOST", "YOUR_DATABASE_HOST"),
+    "user": os.getenv("NEWS_DB_USER", "YOUR_DATABASE_USER"),
+    "password": os.getenv("NEWS_DB_PASSWORD", "YOUR_DATABASE_PASSWORD"),
+    "database": os.getenv("NEWS_DB_NAME", "YOUR_DATABASE_NAME"),
 }
 
 # RSS Feed URLs (Replace with the specific feeds you want)
@@ -44,9 +50,10 @@ RSS_FEEDS = {
     "New York Times": "https://rss.nytimes.com/services/xml/rss/nyt/HomePage.xml",
     "Washington Post": "http://feeds.washingtonpost.com/rss/national?itid=lk_inline_manual_7",
     "Google News": "https://news.google.com/rss",
-    # 'Axios': 'URL_IF_FOUND' # TODO(zhach): add Axios feed URL
-    # 'Reuters': 'http://feeds.reuters.com/reuters/topNews', TODO(zhach): figure out auth
 }
+
+DEFAULT_FEED_TIMEOUT_SECONDS = 10
+DEFAULT_FEED_RETRIES = 1
 
 # Logging setup
 logging.basicConfig(
@@ -91,6 +98,33 @@ def normalize_url(url):
 def stable_article_id(url):
     canonical_url = normalize_url(url)
     return hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:16]
+
+
+def load_feeds(path=None):
+    if not path:
+        return dict(RSS_FEEDS)
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise ValueError("feed config must be a JSON object of source name to feed URL")
+    return data
+
+
+def fetch_feed(feed_url, timeout=DEFAULT_FEED_TIMEOUT_SECONDS, retries=DEFAULT_FEED_RETRIES):
+    if feedparser.parse is None:
+        raise RuntimeError("feedparser is required to fetch RSS feeds")
+    attempts = retries + 1
+    last_error = None
+    for _ in range(attempts):
+        try:
+            if requests is None:
+                return feedparser.parse(feed_url)
+            resp = requests.get(feed_url, timeout=timeout)
+            resp.raise_for_status()
+            return feedparser.parse(resp.content)
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"failed to fetch feed after {attempts} attempt(s): {last_error}")
 
 
 # --- Database Functions ---
@@ -235,13 +269,24 @@ def insert_article(connection, article_data):
 # --- Main Job Function ---
 
 
-def fetch_and_store_feeds(store: bool, export_format=None, output_path=None):
+def fetch_and_store_feeds(
+    store: bool,
+    export_format=None,
+    output_path=None,
+    feeds=None,
+    timeout=DEFAULT_FEED_TIMEOUT_SECONDS,
+    retries=DEFAULT_FEED_RETRIES,
+    return_report=False,
+):
     """Fetch articles from RSS feeds, optionally storing or exporting them.
 
     Args:
         store: if true, store data into database.
         export_format: optional "json" or "csv" output format.
         output_path: optional file path for exported articles.
+        feeds: optional mapping of source name to feed URL.
+        timeout: per-feed HTTP timeout in seconds.
+        retries: retry count after the first failed attempt.
     """
     logging.info("Starting RSS feed fetch job...")
     connection = None
@@ -254,15 +299,14 @@ def fetch_and_store_feeds(store: bool, export_format=None, output_path=None):
     total_inserted = 0
     total_processed = 0
     articles = []
+    failures = []
     seen_article_ids = set()
+    feed_map = feeds or RSS_FEEDS
 
-    for source_name, feed_url in RSS_FEEDS.items():
+    for source_name, feed_url in feed_map.items():
         logging.info(f"Fetching feed for: {source_name} from {feed_url}")
         try:
-            if feedparser.parse is None:
-                raise RuntimeError("feedparser is required to fetch RSS feeds")
-
-            feed_data = feedparser.parse(feed_url)
+            feed_data = fetch_feed(feed_url, timeout=timeout, retries=retries)
 
             if feed_data.bozo:
                 logging.warning(
@@ -308,6 +352,7 @@ def fetch_and_store_feeds(store: bool, export_format=None, output_path=None):
             )
 
         except Exception as e:
+            failures.append({"source": source_name, "url": feed_url, "error": str(e)})
             logging.error(
                 f"Error processing feed {source_name} ({feed_url}): {e}", 
                 exc_info=True
@@ -323,6 +368,10 @@ def fetch_and_store_feeds(store: bool, export_format=None, output_path=None):
         f"""RSS feed fetch job finished. Total entries processed: 
         {total_processed}, Total new articles inserted: {total_inserted}"""
     )
+    if failures:
+        logging.warning("Partial feed failures: %s", failures)
+    if return_report:
+        return {"articles": articles, "failures": failures}
     return articles
 
 
@@ -331,7 +380,8 @@ def main(args):
     # Optional: Run once immediately on start for testing
     if args.test:
         logging.info("Running as a test...")
-        fetch_and_store_feeds(args.store, args.export, args.output)
+        feeds = load_feeds(args.feeds)
+        fetch_and_store_feeds(args.store, args.export, args.output, feeds=feeds, timeout=args.feed_timeout, retries=args.feed_retries)
         return 0
     if schedule is None:
         raise RuntimeError("schedule is required for scheduled mode")
@@ -342,6 +392,9 @@ def main(args):
         store=args.store,
         export_format=args.export,
         output_path=args.output,
+        feeds=load_feeds(args.feeds),
+        timeout=args.feed_timeout,
+        retries=args.feed_retries,
     )
 
     logging.info("RSS Collector starting. Waiting for scheduled job...")
@@ -375,6 +428,22 @@ if __name__ == "__main__":
         "-o",
         "--output",
         help="Optional output path for --export json/csv.",
+    )
+    parser.add_argument(
+        "--feeds",
+        help="Path to JSON feed config: {\"Source\": \"https://feed\"}.",
+    )
+    parser.add_argument(
+        "--feed-timeout",
+        type=float,
+        default=DEFAULT_FEED_TIMEOUT_SECONDS,
+        help="Per-feed HTTP timeout in seconds.",
+    )
+    parser.add_argument(
+        "--feed-retries",
+        type=int,
+        default=DEFAULT_FEED_RETRIES,
+        help="Retries per feed after the first failed attempt.",
     )
 
     # 2. Parse the command-line arguments

@@ -47,6 +47,13 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_load_feeds_from_json(self):
+        with TemporaryDirectory() as tmp:
+            feeds = Path(tmp) / "feeds.json"
+            feeds.write_text(json.dumps({"Example": "https://example.com/rss"}))
+
+            self.assertEqual(news_scraper.load_feeds(feeds), {"Example": "https://example.com/rss"})
+
     def test_fetch_deduplicates_by_stable_id(self):
         feed = FeedEntry(
             {
@@ -59,7 +66,7 @@ class NewsScraperTests(unittest.TestCase):
         )
 
         with TemporaryDirectory() as tmp, patch.object(
-            news_scraper.feedparser, "parse", return_value=feed
+            news_scraper, "fetch_feed", return_value=feed
         ), patch.dict(news_scraper.RSS_FEEDS, {"Test": "https://feed.example/rss"}, clear=True):
             articles = news_scraper.fetch_and_store_feeds(
                 store=False,
@@ -68,6 +75,24 @@ class NewsScraperTests(unittest.TestCase):
             )
 
         self.assertEqual(len(articles), 1)
+
+    def test_fetch_reports_partial_feed_failures(self):
+        good_feed = FeedEntry({"bozo": False, "entries": [self.entry()]})
+
+        def fake_fetch(url, timeout=10, retries=1):
+            if "bad" in url:
+                raise RuntimeError("timeout")
+            return good_feed
+
+        with patch.object(news_scraper, "fetch_feed", side_effect=fake_fetch):
+            report = news_scraper.fetch_and_store_feeds(
+                store=False,
+                feeds={"Good": "https://feed.example/rss", "Bad": "https://bad.example/rss"},
+                return_report=True,
+            )
+
+        self.assertEqual(len(report["articles"]), 1)
+        self.assertEqual(report["failures"][0]["source"], "Bad")
 
     def test_export_articles_writes_json_and_csv(self):
         articles = [news_scraper.article_from_entry("Test", self.entry())]
