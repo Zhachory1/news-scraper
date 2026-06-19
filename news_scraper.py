@@ -1,13 +1,31 @@
-import feedparser
-import mysql.connector
-from mysql.connector import Error
-import schedule
 import time
 from datetime import datetime
 import logging
 import sys
-import argparse  # Often used for command-line arguments
-import html  # To potentially decode HTML entities in summaries
+import argparse
+import csv
+import hashlib
+import html
+import json
+from types import SimpleNamespace
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+try:
+    import feedparser
+except ImportError:
+    feedparser = SimpleNamespace(parse=None)
+
+try:
+    import mysql.connector
+    from mysql.connector import Error
+except ImportError:
+    mysql = SimpleNamespace(connector=None)
+    Error = Exception
+
+try:
+    import schedule
+except ImportError:
+    schedule = None
 
 # --- Configuration ---
 # Database Credentials (Replace with your actual details)
@@ -35,11 +53,53 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+TRACKING_QUERY_PARAMS = {"fbclid", "gclid", "mc_cid", "mc_eid"}
+
+ARTICLE_FIELDS = [
+    "id",
+    "source",
+    "url",
+    "canonical_url",
+    "headline",
+    "author",
+    "publish_date",
+    "category",
+    "summary",
+]
+
+
+def normalize_url(url):
+    parsed = urlparse((url or "").strip())
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if not key.lower().startswith("utm_") and key.lower() not in TRACKING_QUERY_PARAMS
+    ]
+    normalized_path = parsed.path.rstrip("/") or "/"
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            normalized_path,
+            "",
+            urlencode(sorted(query)),
+            "",
+        )
+    )
+
+
+def stable_article_id(url):
+    canonical_url = normalize_url(url)
+    return hashlib.sha256(canonical_url.encode("utf-8")).hexdigest()[:16]
+
+
 # --- Database Functions ---
 def create_db_connection():
     """Creates and returns a MySQL database connection."""
     connection = None
     try:
+        if mysql.connector is None:
+            raise RuntimeError("mysql-connector-python is required for --store")
         connection = mysql.connector.connect(**DB_CONFIG)
         logging.info("MySQL Database connection successful")
     except Error as e:
@@ -64,24 +124,70 @@ def format_feed_date(entry):
 
 def get_category(entry):
     """Extracts category/tags from feed entry if available."""
-    if hasattr(entry, "tags"):
-        # entry.tags is often a list of dicts like [{'term': 'Politics', 'scheme': None, 'label': None}, ...]
-        return ", ".join(tag.get("term", "") for tag in entry.tags if tag.get("term"))
-    elif hasattr(entry, "category"):
-        return entry.category  # Sometimes it's a simple string attribute
-    return None
+    tags = entry.get("tags") if hasattr(entry, "get") else getattr(entry, "tags", None)
+    if tags:
+        category = ", ".join(tag.get("term", "") for tag in tags if tag.get("term"))
+        return category or None
+    if hasattr(entry, "get"):
+        return entry.get("category")
+    return getattr(entry, "category", None)
 
 
 def get_author(entry):
     """Extracts author from feed entry if available."""
-    if hasattr(entry, "author"):
-        return entry.author
-    elif hasattr(entry, "authors"):
-        # entry.authors might be a list of dicts
-        return ", ".join(
-            author.get("name", "") for author in entry.authors if author.get("name")
-        )
+    author = entry.get("author") if hasattr(entry, "get") else getattr(entry, "author", None)
+    if author:
+        return author
+    authors = entry.get("authors") if hasattr(entry, "get") else getattr(entry, "authors", None)
+    if authors:
+        joined = ", ".join(author.get("name", "") for author in authors if author.get("name"))
+        return joined or None
     return None
+
+
+def article_from_entry(source_name, entry):
+    url = entry.get("link")
+    canonical_url = normalize_url(url)
+    return {
+        "id": stable_article_id(url),
+        "source": source_name,
+        "url": url,
+        "canonical_url": canonical_url,
+        "headline": entry.get("title"),
+        "author": get_author(entry),
+        "publish_date": format_feed_date(entry),
+        "category": get_category(entry),
+        "summary": html.unescape(entry.get("summary") or entry.get("description", "")),
+    }
+
+
+def export_articles(articles, export_format, output_path):
+    if not export_format:
+        return
+    if export_format == "json":
+        payload = json.dumps(articles, indent=2, ensure_ascii=False)
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(payload + "\n")
+        else:
+            print(payload)
+        return
+    if export_format == "csv":
+        if output_path:
+            f = open(output_path, "w", newline="", encoding="utf-8")
+            should_close = True
+        else:
+            f = sys.stdout
+            should_close = False
+        try:
+            writer = csv.DictWriter(f, fieldnames=ARTICLE_FIELDS)
+            writer.writeheader()
+            writer.writerows(articles)
+        finally:
+            if should_close:
+                f.close()
+        return
+    raise ValueError(f"Unsupported export format: {export_format}")
 
 
 def insert_article(connection, article_data):
@@ -129,15 +235,16 @@ def insert_article(connection, article_data):
 # --- Main Job Function ---
 
 
-def fetch_and_store_feeds(store: bool):
-    """Fetches articles from RSS feeds and stores them in the database.
+def fetch_and_store_feeds(store: bool, export_format=None, output_path=None):
+    """Fetch articles from RSS feeds, optionally storing or exporting them.
 
     Args:
-        store: if true, will store data into database. If not, will just print out in console.
+        store: if true, store data into database.
+        export_format: optional "json" or "csv" output format.
+        output_path: optional file path for exported articles.
     """
     logging.info("Starting RSS feed fetch job...")
     connection = None
-    print(f"Store value: {store}")
     if store:
         connection = create_db_connection()
         if not connection:
@@ -146,11 +253,15 @@ def fetch_and_store_feeds(store: bool):
 
     total_inserted = 0
     total_processed = 0
+    articles = []
+    seen_article_ids = set()
 
     for source_name, feed_url in RSS_FEEDS.items():
         logging.info(f"Fetching feed for: {source_name} from {feed_url}")
         try:
-            # Parse the feed
+            if feedparser.parse is None:
+                raise RuntimeError("feedparser is required to fetch RSS feeds")
+
             feed_data = feedparser.parse(feed_url)
 
             if feed_data.bozo:
@@ -166,19 +277,7 @@ def fetch_and_store_feeds(store: bool):
                 processed_count += 1
                 total_processed += 1
 
-                # Extract data using feedparser attributes
-                article = {
-                    "source": source_name,
-                    "url": entry.get("link"),
-                    "headline": entry.get("title"),
-                    "author": get_author(entry),
-                    "publish_date": format_feed_date(entry),
-                    "category": get_category(entry),
-                    # Get summary or description, decode HTML entities
-                    "summary": html.unescape(
-                        entry.get("summary") or entry.get("description", "")
-                    ),
-                }
+                article = article_from_entry(source_name, entry)
 
                 # Basic validation
                 if not article["url"] or not article["headline"]:
@@ -187,9 +286,14 @@ def fetch_and_store_feeds(store: bool):
                     )
                     continue
 
-                # Insert into database
+                if article["id"] in seen_article_ids:
+                    continue
+                seen_article_ids.add(article["id"])
+                articles.append(article)
+
                 if not store:
-                    print(article)
+                    if not export_format:
+                        print(article)
                     inserted_count += 1
                     total_inserted += 1
                     continue
@@ -213,10 +317,13 @@ def fetch_and_store_feeds(store: bool):
         connection.close()
         logging.info("MySQL connection closed.")
 
+    export_articles(articles, export_format, output_path)
+
     logging.info(
         f"""RSS feed fetch job finished. Total entries processed: 
         {total_processed}, Total new articles inserted: {total_inserted}"""
     )
+    return articles
 
 
 # --- Main iteration function ---
@@ -224,10 +331,18 @@ def main(args):
     # Optional: Run once immediately on start for testing
     if args.test:
         logging.info("Running as a test...")
-        fetch_and_store_feeds(args.store)
+        fetch_and_store_feeds(args.store, args.export, args.output)
         return 0
+    if schedule is None:
+        raise RuntimeError("schedule is required for scheduled mode")
+
     # Schedule the job to run once every day at a specific time (e.g., 4:00 AM)
-    schedule.every().day.at("04:00").do(fetch_and_store_feeds, store=args.store)
+    schedule.every().day.at("04:00").do(
+        fetch_and_store_feeds,
+        store=args.store,
+        export_format=args.export,
+        output_path=args.output,
+    )
 
     logging.info("RSS Collector starting. Waiting for scheduled job...")
     while True:
@@ -249,9 +364,18 @@ if __name__ == "__main__":
         "--store",
         action="store_true",
         help="""If true, will store data into database. If not, 
-        will just print out in console.""",
+        will just print out in console unless export is enabled.""",
     )
-    # Add other arguments as needed
+    parser.add_argument(
+        "--export",
+        choices=("json", "csv"),
+        help="Export fetched articles without requiring MySQL storage.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output",
+        help="Optional output path for --export json/csv.",
+    )
 
     # 2. Parse the command-line arguments
     # If parsing fails, argparse automatically exits with an error message.
