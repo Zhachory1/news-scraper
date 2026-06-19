@@ -29,6 +29,21 @@ python news_scraper.py -t --export json --output articles.json
 python news_scraper.py -t --export csv --output articles.csv
 ```
 
+Use a feed config outside source code:
+
+```json
+{
+  "BBC News": "http://feeds.bbci.co.uk/news/world/rss.xml",
+  "Google News": "https://news.google.com/rss"
+}
+```
+
+```bash
+python news_scraper.py -t --feeds feeds.json --feed-timeout 5 --feed-retries 2
+```
+
+Database connection values come from `NEWS_DB_HOST`, `NEWS_DB_USER`, `NEWS_DB_PASSWORD`, and `NEWS_DB_NAME`.
+
 Each exported article uses the canonical schema:
 
 - `id` — stable SHA-256-derived ID from canonical URL

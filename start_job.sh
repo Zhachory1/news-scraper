@@ -1,13 +1,11 @@
-#!/bin/sh
-if [[ -z "${VIRTUAL_ENV+x}" ]] ; then
-    python -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements.txt
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+  python3 -m venv .venv
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+  pip install -r requirements.txt
 fi
 
-# View news_scaper.py to see all arguments
-if [[ $# -eq 0 ]] ; then
-    python news_scraper.py 
-else
-    python news_scraper.py $@
-fi
+python news_scraper.py "$@"
