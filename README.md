@@ -21,3 +21,28 @@ If you just want to test things, you can just add the test flag
 ```
 source start_job.sh -t
 ```
+
+Export fetched articles without writing to MySQL:
+
+```
+python news_scraper.py -t --export json --output articles.json
+python news_scraper.py -t --export csv --output articles.csv
+```
+
+Each exported article uses the canonical schema:
+
+- `id` — stable SHA-256-derived ID from canonical URL
+- `source`
+- `url`
+- `canonical_url`
+- `headline`
+- `author`
+- `publish_date`
+- `category`
+- `summary`
+
+## Tests
+
+```
+python -m unittest discover -s tests
+```
