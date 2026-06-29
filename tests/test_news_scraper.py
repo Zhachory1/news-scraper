@@ -2,6 +2,7 @@ import csv
 import json
 import time
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -76,6 +77,13 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(len(articles), 1)
 
+    def test_fetch_reports_database_connection_failure(self):
+        with patch.object(news_scraper, "create_db_connection", return_value=None):
+            report = news_scraper.fetch_and_store_feeds(store=True, return_report=True)
+
+        self.assertEqual(report["articles"], [])
+        self.assertEqual(report["failures"][0]["source"], "database")
+
     def test_fetch_reports_partial_feed_failures(self):
         good_feed = FeedEntry({"bozo": False, "entries": [self.entry()]})
 
@@ -93,6 +101,21 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(len(report["articles"]), 1)
         self.assertEqual(report["failures"][0]["source"], "Bad")
+
+    def test_main_returns_nonzero_when_all_feeds_fail(self):
+        args = SimpleNamespace(
+            test=True,
+            store=False,
+            export=None,
+            output=None,
+            feeds=None,
+            feed_timeout=10,
+            feed_retries=1,
+        )
+        with patch.object(news_scraper, "load_feeds", return_value={"Bad": "https://bad.example/rss"}), patch.object(
+            news_scraper, "fetch_feed", side_effect=RuntimeError("timeout")
+        ):
+            self.assertEqual(news_scraper.main(args), 1)
 
     def test_export_articles_writes_json_and_csv(self):
         articles = [news_scraper.article_from_entry("Test", self.entry())]

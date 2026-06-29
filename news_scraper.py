@@ -294,7 +294,10 @@ def fetch_and_store_feeds(
         connection = create_db_connection()
         if not connection:
             logging.error("Could not establish database connection. Aborting job.")
-            return
+            failure = {"source": "database", "url": None, "error": "could not establish database connection"}
+            if return_report:
+                return {"articles": [], "failures": [failure]}
+            return []
 
     total_inserted = 0
     total_processed = 0
@@ -381,8 +384,16 @@ def main(args):
     if args.test:
         logging.info("Running as a test...")
         feeds = load_feeds(args.feeds)
-        fetch_and_store_feeds(args.store, args.export, args.output, feeds=feeds, timeout=args.feed_timeout, retries=args.feed_retries)
-        return 0
+        report = fetch_and_store_feeds(
+            args.store,
+            args.export,
+            args.output,
+            feeds=feeds,
+            timeout=args.feed_timeout,
+            retries=args.feed_retries,
+            return_report=True,
+        )
+        return 1 if report["failures"] and not report["articles"] else 0
     if schedule is None:
         raise RuntimeError("schedule is required for scheduled mode")
 
