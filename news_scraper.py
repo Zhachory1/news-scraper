@@ -34,12 +34,11 @@ except ImportError:
     requests = None
 
 # --- Configuration ---
-# Database Credentials (Replace with your actual details)
-DB_CONFIG = {
-    "host": os.getenv("NEWS_DB_HOST", "YOUR_DATABASE_HOST"),
-    "user": os.getenv("NEWS_DB_USER", "YOUR_DATABASE_USER"),
-    "password": os.getenv("NEWS_DB_PASSWORD", "YOUR_DATABASE_PASSWORD"),
-    "database": os.getenv("NEWS_DB_NAME", "YOUR_DATABASE_NAME"),
+DB_ENV_VARS = {
+    "host": "NEWS_DB_HOST",
+    "user": "NEWS_DB_USER",
+    "password": "NEWS_DB_PASSWORD",
+    "database": "NEWS_DB_NAME",
 }
 
 # RSS Feed URLs (Replace with the specific feeds you want)
@@ -128,13 +127,20 @@ def fetch_feed(feed_url, timeout=DEFAULT_FEED_TIMEOUT_SECONDS, retries=DEFAULT_F
 
 
 # --- Database Functions ---
+def get_db_config():
+    missing = [env_var for env_var in DB_ENV_VARS.values() if not os.getenv(env_var)]
+    if missing:
+        raise RuntimeError("Missing database configuration: " + ", ".join(missing))
+    return {key: os.getenv(env_var) for key, env_var in DB_ENV_VARS.items()}
+
+
 def create_db_connection():
     """Creates and returns a MySQL database connection."""
     connection = None
+    if mysql.connector is None:
+        raise RuntimeError("mysql-connector-python is required for --store")
     try:
-        if mysql.connector is None:
-            raise RuntimeError("mysql-connector-python is required for --store")
-        connection = mysql.connector.connect(**DB_CONFIG)
+        connection = mysql.connector.connect(**get_db_config())
         logging.info("MySQL Database connection successful")
     except Error as e:
         logging.error(f"Error connecting to MySQL Database: {e}")

@@ -47,6 +47,23 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_get_db_config_requires_env_vars(self):
+        with patch.dict(news_scraper.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "NEWS_DB_HOST"):
+                news_scraper.get_db_config()
+
+    def test_get_db_config_reads_env_vars(self):
+        with patch.dict(news_scraper.os.environ, {
+            "NEWS_DB_HOST": "db",
+            "NEWS_DB_USER": "user",
+            "NEWS_DB_PASSWORD": "pw",
+            "NEWS_DB_NAME": "news",
+        }, clear=True):
+            self.assertEqual(
+                news_scraper.get_db_config(),
+                {"host": "db", "user": "user", "password": "pw", "database": "news"},
+            )
+
     def test_load_feeds_from_json(self):
         with TemporaryDirectory() as tmp:
             feeds = Path(tmp) / "feeds.json"
