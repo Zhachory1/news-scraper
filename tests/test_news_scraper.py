@@ -17,6 +17,38 @@ class FeedEntry(dict):
             raise AttributeError(name) from exc
 
 
+class FakeCursor:
+    def __init__(self, existing=False):
+        self.existing = existing
+        self.calls = []
+        self.closed = False
+
+    def execute(self, query, values=None):
+        self.calls.append((query, values))
+
+    def fetchone(self):
+        return ("existing",) if self.existing else None
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConnection:
+    def __init__(self, existing=False):
+        self.cursor_obj = FakeCursor(existing)
+        self.committed = False
+        self.rolled_back = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+
+
 class NewsScraperTests(unittest.TestCase):
     def entry(self, **overrides):
         base = {
@@ -110,6 +142,22 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(len(report["articles"]), 1)
         self.assertEqual(report["failures"][0]["source"], "Bad")
+
+    def test_insert_article_uses_canonical_url_and_stable_id(self):
+        connection = FakeConnection()
+        article = news_scraper.article_from_entry("Test", self.entry())
+
+        self.assertTrue(news_scraper.insert_article(connection, article))
+
+        check_query, check_values = connection.cursor_obj.calls[0]
+        insert_query, insert_values = connection.cursor_obj.calls[1]
+        self.assertIn("WHERE canonical_url = %s", check_query)
+        self.assertEqual(check_values, (article["canonical_url"],))
+        self.assertIn("canonical_url", insert_query)
+        self.assertEqual(insert_values[0], article["id"])
+        self.assertEqual(insert_values[3], article["canonical_url"])
+        self.assertTrue(connection.committed)
+        self.assertTrue(connection.cursor_obj.closed)
 
     def test_export_articles_writes_json_and_csv(self):
         articles = [news_scraper.article_from_entry("Test", self.entry())]

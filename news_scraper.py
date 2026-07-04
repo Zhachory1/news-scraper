@@ -233,8 +233,8 @@ def export_articles(articles, export_format, output_path):
 def insert_article(connection, article_data):
     """Inserts a single article from feed into the database, avoiding duplicates based on URL."""
     cursor = connection.cursor()
-    check_query = "SELECT id FROM articles WHERE url = %s"
-    cursor.execute(check_query, (article_data["url"],))
+    check_query = "SELECT id FROM articles WHERE canonical_url = %s"
+    cursor.execute(check_query, (article_data["canonical_url"],))
     result = cursor.fetchone()
 
     if result:
@@ -243,12 +243,14 @@ def insert_article(connection, article_data):
 
     insert_query = """
     INSERT INTO articles
-    (source, url, headline, author, publish_date, category, summary)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    (id, source, url, canonical_url, headline, author, publish_date, category, summary)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     article_values = (
+        article_data.get("id"),
         article_data.get("source"),
         article_data.get("url"),
+        article_data.get("canonical_url"),
         article_data.get("headline"),
         article_data.get("author"),
         article_data.get("publish_date"),
