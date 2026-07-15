@@ -34,12 +34,11 @@ except ImportError:
     requests = None
 
 # --- Configuration ---
-# Database Credentials (Replace with your actual details)
-DB_CONFIG = {
-    "host": os.getenv("NEWS_DB_HOST", "YOUR_DATABASE_HOST"),
-    "user": os.getenv("NEWS_DB_USER", "YOUR_DATABASE_USER"),
-    "password": os.getenv("NEWS_DB_PASSWORD", "YOUR_DATABASE_PASSWORD"),
-    "database": os.getenv("NEWS_DB_NAME", "YOUR_DATABASE_NAME"),
+DB_ENV_VARS = {
+    "host": "NEWS_DB_HOST",
+    "user": "NEWS_DB_USER",
+    "password": "NEWS_DB_PASSWORD",
+    "database": "NEWS_DB_NAME",
 }
 
 # RSS Feed URLs (Replace with the specific feeds you want)
@@ -128,13 +127,20 @@ def fetch_feed(feed_url, timeout=DEFAULT_FEED_TIMEOUT_SECONDS, retries=DEFAULT_F
 
 
 # --- Database Functions ---
+def get_db_config():
+    missing = [env_var for env_var in DB_ENV_VARS.values() if not os.getenv(env_var)]
+    if missing:
+        raise RuntimeError("Missing database configuration: " + ", ".join(missing))
+    return {key: os.getenv(env_var) for key, env_var in DB_ENV_VARS.items()}
+
+
 def create_db_connection():
     """Creates and returns a MySQL database connection."""
     connection = None
+    if mysql.connector is None:
+        raise RuntimeError("mysql-connector-python is required for --store")
     try:
-        if mysql.connector is None:
-            raise RuntimeError("mysql-connector-python is required for --store")
-        connection = mysql.connector.connect(**DB_CONFIG)
+        connection = mysql.connector.connect(**get_db_config())
         logging.info("MySQL Database connection successful")
     except Error as e:
         logging.error(f"Error connecting to MySQL Database: {e}")
@@ -254,8 +260,8 @@ def export_articles(articles, export_format, output_path):
 def insert_article(connection, article_data):
     """Inserts a single article from feed into the database, avoiding duplicates based on URL."""
     cursor = connection.cursor()
-    check_query = "SELECT id FROM articles WHERE url = %s"
-    cursor.execute(check_query, (article_data["url"],))
+    check_query = "SELECT id FROM articles WHERE canonical_url = %s"
+    cursor.execute(check_query, (article_data["canonical_url"],))
     result = cursor.fetchone()
 
     if result:
@@ -264,12 +270,14 @@ def insert_article(connection, article_data):
 
     insert_query = """
     INSERT INTO articles
-    (source, url, headline, author, publish_date, category, summary)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    (id, source, url, canonical_url, headline, author, publish_date, category, summary)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     article_values = (
+        article_data.get("id"),
         article_data.get("source"),
         article_data.get("url"),
+        article_data.get("canonical_url"),
         article_data.get("headline"),
         article_data.get("author"),
         article_data.get("publish_date"),
@@ -321,7 +329,10 @@ def fetch_and_store_feeds(
         connection = create_db_connection()
         if not connection:
             logging.error("Could not establish database connection. Aborting job.")
-            return
+            failure = {"source": "database", "url": None, "error": "could not establish database connection"}
+            if return_report:
+                return {"articles": [], "failures": [failure]}
+            return []
 
     total_inserted = 0
     total_processed = 0
@@ -408,8 +419,16 @@ def main(args):
     if args.test:
         logging.info("Running as a test...")
         feeds = load_feeds(args.feeds)
-        fetch_and_store_feeds(args.store, args.export, args.output, feeds=feeds, timeout=args.feed_timeout, retries=args.feed_retries)
-        return 0
+        report = fetch_and_store_feeds(
+            args.store,
+            args.export,
+            args.output,
+            feeds=feeds,
+            timeout=args.feed_timeout,
+            retries=args.feed_retries,
+            return_report=True,
+        )
+        return 1 if report["failures"] and not report["articles"] else 0
     if schedule is None:
         raise RuntimeError("schedule is required for scheduled mode")
 

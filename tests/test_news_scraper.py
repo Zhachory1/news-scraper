@@ -4,6 +4,7 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import news_scraper
@@ -15,6 +16,38 @@ class FeedEntry(dict):
             return self[name]
         except KeyError as exc:
             raise AttributeError(name) from exc
+
+
+class FakeCursor:
+    def __init__(self, existing=False):
+        self.existing = existing
+        self.calls = []
+        self.closed = False
+
+    def execute(self, query, values=None):
+        self.calls.append((query, values))
+
+    def fetchone(self):
+        return ("existing",) if self.existing else None
+
+    def close(self):
+        self.closed = True
+
+
+class FakeConnection:
+    def __init__(self, existing=False):
+        self.cursor_obj = FakeCursor(existing)
+        self.committed = False
+        self.rolled_back = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
 
 
 class NewsScraperTests(unittest.TestCase):
@@ -47,6 +80,23 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(first, second)
 
+    def test_get_db_config_requires_env_vars(self):
+        with patch.dict(news_scraper.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "NEWS_DB_HOST"):
+                news_scraper.get_db_config()
+
+    def test_get_db_config_reads_env_vars(self):
+        with patch.dict(news_scraper.os.environ, {
+            "NEWS_DB_HOST": "db",
+            "NEWS_DB_USER": "user",
+            "NEWS_DB_PASSWORD": "pw",
+            "NEWS_DB_NAME": "news",
+        }, clear=True):
+            self.assertEqual(
+                news_scraper.get_db_config(),
+                {"host": "db", "user": "user", "password": "pw", "database": "news"},
+            )
+
     def test_load_feeds_from_json(self):
         with TemporaryDirectory() as tmp:
             feeds = Path(tmp) / "feeds.json"
@@ -76,6 +126,13 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(len(articles), 1)
 
+    def test_fetch_reports_database_connection_failure(self):
+        with patch.object(news_scraper, "create_db_connection", return_value=None):
+            report = news_scraper.fetch_and_store_feeds(store=True, return_report=True)
+
+        self.assertEqual(report["articles"], [])
+        self.assertEqual(report["failures"][0]["source"], "database")
+
     def test_fetch_reports_partial_feed_failures(self):
         good_feed = FeedEntry({"bozo": False, "entries": [self.entry()]})
 
@@ -93,6 +150,37 @@ class NewsScraperTests(unittest.TestCase):
 
         self.assertEqual(len(report["articles"]), 1)
         self.assertEqual(report["failures"][0]["source"], "Bad")
+
+    def test_main_returns_nonzero_when_all_feeds_fail(self):
+        args = SimpleNamespace(
+            test=True,
+            store=False,
+            export=None,
+            output=None,
+            feeds=None,
+            feed_timeout=10,
+            feed_retries=1,
+        )
+        with patch.object(news_scraper, "load_feeds", return_value={"Bad": "https://bad.example/rss"}), patch.object(
+            news_scraper, "fetch_feed", side_effect=RuntimeError("timeout")
+        ):
+            self.assertEqual(news_scraper.main(args), 1)
+
+    def test_insert_article_uses_canonical_url_and_stable_id(self):
+        connection = FakeConnection()
+        article = news_scraper.article_from_entry("Test", self.entry())
+
+        self.assertTrue(news_scraper.insert_article(connection, article))
+
+        check_query, check_values = connection.cursor_obj.calls[0]
+        insert_query, insert_values = connection.cursor_obj.calls[1]
+        self.assertIn("WHERE canonical_url = %s", check_query)
+        self.assertEqual(check_values, (article["canonical_url"],))
+        self.assertIn("canonical_url", insert_query)
+        self.assertEqual(insert_values[0], article["id"])
+        self.assertEqual(insert_values[3], article["canonical_url"])
+        self.assertTrue(connection.committed)
+        self.assertTrue(connection.cursor_obj.closed)
 
     def test_export_articles_writes_json_csv_and_markdown(self):
         articles = [news_scraper.article_from_entry("Test", self.entry())]

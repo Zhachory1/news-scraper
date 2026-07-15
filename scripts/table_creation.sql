@@ -6,16 +6,17 @@
 
 -- Create the table to store article information
 CREATE TABLE IF NOT EXISTS articles (
-    id INT AUTO_INCREMENT PRIMARY KEY,
+    id VARCHAR(16) PRIMARY KEY,
     source VARCHAR(50) NOT NULL,         -- e.g., 'BBC News', 'Reuters'
-    url VARCHAR(1024) NOT NULL UNIQUE,   -- Article URL (Unique to prevent duplicates)
+    url VARCHAR(1024) NOT NULL,
+    canonical_url VARCHAR(1024) NOT NULL UNIQUE,
     headline TEXT NOT NULL,              -- Article title
     author VARCHAR(255),                 -- Author name(s)
     publish_date DATETIME,               -- Publication date/time
     category VARCHAR(100),               -- Article category/section
-    full_text LONGTEXT,                  -- Full text content (can be very long)
+    summary TEXT,                        -- Feed summary/description
     scraped_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- When the article was scraped
 );
 
--- Add an index for faster URL lookups
-CREATE INDEX idx_url ON articles (url(255)); -- Index part of the URL for efficiency
+-- Add an index for faster canonical URL lookups
+CREATE INDEX idx_canonical_url ON articles (canonical_url(255));

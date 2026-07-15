@@ -43,7 +43,21 @@ Use a feed config outside source code:
 python news_scraper.py -t --feeds feeds.json --feed-timeout 5 --feed-retries 2
 ```
 
-Database connection values come from `NEWS_DB_HOST`, `NEWS_DB_USER`, `NEWS_DB_PASSWORD`, and `NEWS_DB_NAME`.
+No-store mode prints or exports articles without MySQL:
+
+```bash
+python news_scraper.py -t --export json --output articles.json
+```
+
+DB-backed mode requires environment variables from `.env.example`:
+
+```bash
+export NEWS_DB_HOST=localhost
+export NEWS_DB_USER=news_scraper
+export NEWS_DB_PASSWORD=change-me
+export NEWS_DB_NAME=news_articles
+python news_scraper.py -t --store
+```
 
 Each exported article uses the canonical schema:
 
