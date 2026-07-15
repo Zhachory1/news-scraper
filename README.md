@@ -27,6 +27,7 @@ Export fetched articles without writing to MySQL:
 ```
 python news_scraper.py -t --export json --output articles.json
 python news_scraper.py -t --export csv --output articles.csv
+python news_scraper.py -t --export markdown --output digest.md
 ```
 
 Use a feed config outside source code:

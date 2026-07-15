@@ -201,6 +201,25 @@ def article_from_entry(source_name, entry):
     }
 
 
+def markdown_digest(articles):
+    lines = ["# News Digest", ""]
+    for article in articles:
+        headline = article.get("headline") or "Untitled"
+        url = article.get("canonical_url") or article.get("url") or ""
+        source = article.get("source") or "Unknown source"
+        metadata = " · ".join(
+            value for value in [source, article.get("publish_date"), article.get("category")] if value
+        )
+        lines.append(f"## [{headline}]({url})" if url else f"## {headline}")
+        if metadata:
+            lines.append(metadata)
+        if article.get("summary"):
+            lines.append("")
+            lines.append(article["summary"])
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def export_articles(articles, export_format, output_path):
     if not export_format:
         return
@@ -226,6 +245,14 @@ def export_articles(articles, export_format, output_path):
         finally:
             if should_close:
                 f.close()
+        return
+    if export_format == "markdown":
+        payload = markdown_digest(articles)
+        if output_path:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(payload)
+        else:
+            print(payload, end="")
         return
     raise ValueError(f"Unsupported export format: {export_format}")
 
@@ -440,7 +467,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--export",
-        choices=("json", "csv"),
+        choices=("json", "csv", "markdown"),
         help="Export fetched articles without requiring MySQL storage.",
     )
     parser.add_argument(

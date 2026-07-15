@@ -182,19 +182,26 @@ class NewsScraperTests(unittest.TestCase):
         self.assertTrue(connection.committed)
         self.assertTrue(connection.cursor_obj.closed)
 
-    def test_export_articles_writes_json_and_csv(self):
+    def test_export_articles_writes_json_csv_and_markdown(self):
         articles = [news_scraper.article_from_entry("Test", self.entry())]
         with TemporaryDirectory() as tmp:
             json_path = Path(tmp) / "articles.json"
             csv_path = Path(tmp) / "articles.csv"
+            markdown_path = Path(tmp) / "digest.md"
 
             news_scraper.export_articles(articles, "json", json_path)
             news_scraper.export_articles(articles, "csv", csv_path)
+            news_scraper.export_articles(articles, "markdown", markdown_path)
 
             self.assertEqual(json.loads(json_path.read_text())[0]["headline"], "A headline")
             with csv_path.open(newline="") as f:
                 rows = list(csv.DictReader(f))
             self.assertEqual(rows[0]["headline"], "A headline")
+            digest = markdown_path.read_text()
+            self.assertIn("# News Digest", digest)
+            self.assertIn("[A headline](https://example.com/story?id=42)", digest)
+            self.assertIn("Test · 2026-06-19 12:30:00 · Politics, World", digest)
+            self.assertIn("A & B", digest)
 
 
 if __name__ == "__main__":
